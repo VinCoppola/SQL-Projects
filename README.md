@@ -1,1 +1,1 @@
-# SQL-Projects
+# MySQL-YouTube-Series
