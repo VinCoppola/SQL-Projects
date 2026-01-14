@@ -4,34 +4,155 @@
 
 USE world_layoffs;
 
+-- Imported from Initia CSV file
 SELECT * 
 FROM layoffs;
 
+-- I wanted more context so I added data from another source, this could certainly lead to duplicates and redundancies so I want to clean well
+SELECT * 
+FROM layoffs_through_2025;
+
 -- Data Cleaning, First create staging table
+-- First Clearing Stage Tables for Insertion
+DROP TABLE IF EXISTS layoffs_staging;
+DROP TABLE IF EXISTS layoffs_25_staging;
+
 CREATE TABLE IF NOT EXISTS layoffs_staging
 LIKE layoffs;
 
-SELECT * 
-FROM layoffs_staging;
+CREATE TABLE IF NOT EXISTS `layoffs_25_staging`
+LIKE layoffs_through_2025;
 
 INSERT INTO layoffs_staging
 SELECT *
 FROM layoffs;
 
+INSERT INTO layoffs_25_staging
+SELECT *
+FROM layoffs_through_2025;
+
+-- Now to combine the data, first creating a table for union which has only columns that exist in layoffs original
+
+CREATE TABLE IF NOT EXISTS `layoffs_25_for_union`
+LIKE layoffs_staging;
+
+DROP PROCEDURE IF EXISTS select_shared_columns;
+
+DELIMITER $$
+
+CREATE PROCEDURE select_shared_columns()
+BEGIN
+    DECLARE column_list TEXT;
+    DECLARE insert_list TEXT;
+    DECLARE sql_stmt TEXT;
+
+    -- Preventing GROUP_CONCAT truncation just in case (not as applicable for this dataset)
+    SET SESSION group_concat_max_len = 100000;
+
+    -- Build ordered list of shared columns
+    SELECT
+        GROUP_CONCAT(CONCAT('`', s.COLUMN_NAME, '`')
+                     ORDER BY s.ORDINAL_POSITION)
+    INTO column_list
+    FROM INFORMATION_SCHEMA.COLUMNS s
+    JOIN INFORMATION_SCHEMA.COLUMNS t
+      ON s.COLUMN_NAME = t.COLUMN_NAME
+     AND s.TABLE_SCHEMA = t.TABLE_SCHEMA
+    WHERE s.TABLE_SCHEMA = 'world_layoffs'
+      AND s.TABLE_NAME   = 'layoffs_staging'
+      AND t.TABLE_NAME   = 'layoffs_25_staging';
+      
+      
+      SELECT
+        GROUP_CONCAT(
+			CASE 
+				WHEN s.DATA_TYPE IN ('int','bigint','smallint','mediumint','tinyint')
+                THEN CONCAT('NULLIF(`', s.COLUMN_NAME, '`, '''') AS `',s.COLUMN_NAME,'`')
+                ELSE CONCAT('`', s.COLUMN_NAME, '`')
+                END
+                     ORDER BY s.ORDINAL_POSITION)
+    INTO insert_list
+    FROM INFORMATION_SCHEMA.COLUMNS s
+    JOIN INFORMATION_SCHEMA.COLUMNS t
+      ON s.COLUMN_NAME = t.COLUMN_NAME
+     AND s.TABLE_SCHEMA = t.TABLE_SCHEMA
+    WHERE s.TABLE_SCHEMA = 'world_layoffs'
+      AND s.TABLE_NAME   = 'layoffs_staging'
+      AND t.TABLE_NAME   = 'layoffs_25_staging';
+
+    -- Checking to see if there are no shared columns because that would be unideal in this scenario
+    IF column_list IS NULL OR insert_list IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No shared columns found between tables';
+    END IF;
+
+    -- Build dynamic SQL
+    SET sql_stmt = CONCAT(
+        'Insert Into layoffs_25_for_union (',column_list,') ', 
+        'SELECT ', insert_list, '
+         FROM layoffs_25_staging'
+    );
+
+    -- Execute dynamic SQL
+    SET @sql_to_execute = sql_stmt;
+
+    PREPARE stmt FROM @sql_to_execute;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+    SET @sql_to_execute = NULL;
+    
+END $$
+
+DELIMITER ;
+
+CALL select_shared_columns();
+
+-- Confirming that row count hasnt changed and unioning data with original to
+SELECT COUNT(*) 
+FROM layoffs_25_for_union;
+
+SELECT COUNT(*) 
+FROM layoffs_staging;
+
+CREATE TABLE final_layoff_staging AS
+(SELECT *
+FROM layoffs_25_for_union
+UNION 
+SELECT * 
+FROM layoffs_staging);
+
+SELECT COUNT(*)
+FROM final_layoff_staging;
+
+UPDATE final_layoff_staging 
+SET location = REPLACE(location, ', Non-U.S.',''),
+percentage_laid_off = ROUND(percentage_laid_off,2);
+
 -- Removing Duplicates First look into them
 WITH duplicate_cte AS(
 SELECT *,
 ROW_NUMBER() OVER(PARTITION BY 
-company,location,industry,total_laid_off,percentage_laid_off,`date`, stage, country, funds_raised_millions) AS row_num
-FROM layoffs_staging
-)
+company,location,industry,total_laid_off,percentage_laid_off,`date`, stage, country ORDER BY funds_raised_millions DESC) AS row_num
+FROM final_layoff_staging)
 SELECT * 
 FROM duplicate_cte
 WHERE row_num > 1;
 
+-- Insepecting Some Weird Edge Cases
 SELECT * 
-FROM layoffs_staging
-WHERE company = 'Yahoo';
+FROM final_layoff_staging
+WHERE company IN 
+(
+WITH duplicate_cte AS(
+SELECT *,
+ROW_NUMBER() OVER(PARTITION BY 
+company,location,industry,`date`, stage, country ORDER BY funds_raised_millions DESC) AS row_num
+FROM final_layoff_staging)
+SELECT DISTINCT(company) 
+FROM duplicate_cte
+WHERE row_num > 2
+) 
+ORDER BY Company,`date`,total_laid_off;
 
 CREATE TABLE `layoffs_staging2` (
   `company` text,
