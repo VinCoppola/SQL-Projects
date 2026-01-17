@@ -154,6 +154,8 @@ WHERE row_num > 2
 ) 
 ORDER BY Company,`date`,total_laid_off;
 
+DROP TABLE IF EXISTS layoffs_staging2;
+
 CREATE TABLE `layoffs_staging2` (
   `company` text,
   `location` text,
@@ -170,10 +172,10 @@ CREATE TABLE `layoffs_staging2` (
 
 -- Creating Table to officially delete duplicates
 INSERT INTO layoffs_staging2
-(SELECT *,
+SELECT *,
 ROW_NUMBER() OVER(PARTITION BY 
-company,location,industry,total_laid_off,percentage_laid_off,`date`, stage, country, funds_raised_millions) AS row_num
-FROM layoffs_staging);
+company,location,industry,total_laid_off,percentage_laid_off,`date`, stage, country ORDER BY funds_raised_millions DESC) AS row_num
+FROM final_layoff_staging;
 
 DELETE 
 FROM layoffs_staging2
@@ -217,31 +219,35 @@ FROM layoffs_staging2
 WHERE industry = "" or industry IS NULL);
 
 -- Not the most efficent way but used where to atleast decrease complexity
-UPDATE layoffs_staging2
-SET industry = CASE
-	WHEN Company LIKE "Bally%" THEN "Entertainment"
-    WHEN company = "Airbnb" THEN "Travel"
-    WHEN company = "Carvana" THEN "Transportation"
-    WHEN company = "Juul" THEN "Consumer"
-END
-WHERE industry = "" or industry IS NULL;
+## UPDATE layoffs_staging2
+## SET industry = CASE
+##	  WHEN Company LIKE "Bally%" THEN "Entertainment"
+##    WHEN company = "Airbnb" THEN "Travel"
+##    WHEN company = "Carvana" THEN "Transportation"
+##    WHEN company = "Juul" THEN "Consumer"
+## END
+## WHERE industry = "" or industry IS NULL;
 
 -- Alternative Option if there was more data to affect this is more efficient / performed with staging1
-## UPDATE layoffs_staging
-## SET industry = NULL 
-## WHERE industry = '';
+UPDATE layoffs_staging2
+SET industry = NULL 
+WHERE industry = '';
 
-## SELECT *
-## from layoffs_staging AS l1
-## JOIN layoffs_staging AS l2
-## 	ON l1.company = l2.company
-## WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
+UPDATE layoffs_staging2
+SET stage = NULL 
+WHERE stage = '';
 
-## UPDATE layoffs_staging AS l1
-## JOIN layoffs_staging AS l2
-## 	ON l1.company = l2.company
-## SET l1.industry = l2.industry
-## WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
+SELECT *
+from layoffs_staging2 AS l1
+JOIN layoffs_staging2 AS l2
+ON l1.company = l2.company
+WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
+
+UPDATE layoffs_staging2 AS l1
+JOIN layoffs_staging2 AS l2
+ON l1.company = l2.company
+SET l1.industry = l2.industry
+WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
 
 SELECT DISTINCT(location) 
 FROM layoffs_staging2
@@ -249,24 +255,33 @@ ORDER BY 1;
 
 SELECT *
 FROM layoffs_staging2
-WHERE location LIKE "%seldorf" OR location LIKE "Malm%";
+WHERE location REGEXP "[^'A-Z a-z.-]";
+
+SELECT *
+FROM layoffs_staging2
+WHERE company LIKE "Deliveroo%";
+
+UPDATE layoffs_staging2
+SET location = CASE
+	WHEN location LIKE "%seldorf" THEN "Dusseldorf"
+    WHEN location LIKE "Malm%" THEN "Malmo"
+    WHEN company = "Tibber" THEN "Forde"
+    WHEN company = "The Org" THEN "New York"
+    WHEN company = "Involves" THEN "Florianopolis"
+    WHEN company = "Kleos Space" THEN "Kockelscheuer"
+    WHEN company = "Deliveroo Australia" THEN "Melbourne"
+    ELSE location
+END;
 
 SELECT DISTINCT(country) 
 FROM layoffs_staging2
 WHERE country LIKE "United States%";
 
 UPDATE layoffs_staging2
-SET location = CASE
-	WHEN location LIKE "%seldorf" THEN "Dusseldorf"
-    WHEN location LIKE "Malm%" THEN "Malmo"
-END
-WHERE location LIKE "%seldorf" OR location LIKE "Malm%";
-
-UPDATE layoffs_staging2
 SET country = TRIM(Trailing '.' FROM country)
 WHERE country LIKE "United States%";
 
--- Date Standardization, (FIRST INSPECTING NULLS BUT NO DATE TO FILL)
+-- Date Standardization, (FIRST INSPECTING NULLS - had one company with null so did research to find time frame of when layoffs occured for Blackbaud to impute)
 SELECT * FROM layoffs_staging2
 WHERE company IN (
 SELECT COMPANY 
@@ -275,6 +290,10 @@ WHERE `DATE` IS NULL);
 
 UPDATE layoffs_staging2
 SET `date` = str_to_date(`date`,"%m/%d/%Y");
+
+UPDATE layoffs_staging2
+SET date = cast('2023-02-14' AS DATE)
+WHERE company = "Blackbaud";
 
 SELECT * 
 FROM layoffs_staging2;
@@ -287,6 +306,7 @@ SELECT *
 FROM layoffs_staging2 
 WHERE total_laid_off IS NULL AND percentage_laid_off IS NULL
 ORDER BY 1;
+
 
 -- FOUND some redundant cases but impossible to know if the dublin branch is the same lay offs number as Toronto and other row is truly a duplicate after all
 SELECT * 
@@ -313,6 +333,55 @@ WHERE company IN (
 SELECT Company 
 from layoffs_staging2 
 WHERE stage IS NULL);
+
+UPDATE layoffs_staging2 l1
+JOIN layoffs_staging2 l2
+ON l1.company = l2.company AND l1.`date` = l2.`date` 
+SET l1.stage = l2.stage
+WHERE l1.stage IS NULL and l2.stage IS NOT NULL;
+
+SELECT * FROM 
+layoffs_staging2 
+WHERE company IN (SELECT DISTINCT(COMPANY)
+FROM layoffs_staging2
+WHERE stage = "unknown")
+ORDER BY company,stage;
+
+
+SET company = CASE
+	WHEN company = "cart.com" THEN 'Series C'
+	WHEN 
+END;
+
+
+-- DELETING FINAL DUPLICATES TO ENSURE UNIQUENESS
+SELECT *
+FROM layoffs_staging2
+WHERE COMPANY IN (WITH duplicate_cte AS (SELECT *,
+ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country ORDER BY total_laid_off,percentage_laid_off,funds_raised_millions) AS row_num
+FROM layoffs_staging2)
+SELECT DISTINCT(company)  
+FROM duplicate_cte
+WHERE row_num > 2);
+
+WITH duplicate_cte AS (SELECT *,
+ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country ORDER BY total_laid_off,percentage_laid_off,funds_raised_millions) AS row_num
+FROM layoffs_staging2)
+SELECT *  
+FROM duplicate_cte
+WHERE row_num > 2;
+
+UPDATE layoffs_staging2 l1
+JOIN layoffs_staging2 l2
+ON l1.company = l2.company AND l1.`date` = l2.`date` 
+SET l1.percentage_laid_off = l2.percentage_laid_off
+WHERE l1.percentage_laid_off IS NULL and l2.percentage_laid_off IS NOT NULL;
+
+UPDATE layoffs_staging2 l1
+JOIN layoffs_staging2 l2
+ON l1.company = l2.company AND l1.`date` = l2.`date` 
+SET l1.funds_raised_millions = l2.funds_raised_millions
+WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
 
 -- Lets look at final table
 SELECT * 
