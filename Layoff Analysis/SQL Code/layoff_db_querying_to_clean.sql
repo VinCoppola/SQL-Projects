@@ -321,15 +321,34 @@ UPDATE layoffs_staging2
 SET stage = NULL 
 WHERE stage = '';
 
-SELECT l1.company
+SELECT *
 from layoffs_staging2 AS l1
 JOIN layoffs_staging2 AS l2
 ON l1.company = l2.company
 WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
 
+-- I noticed that my updates when using self joins to find nul values in similarly defined rows by company, date and indsutry were quite slow in comparison to the rest of my
+-- querying (eg. 6-11 seconds to make the udates. Therefore I decided to index some columns and opted for company,date as a combination since I use company here and both later - it affords me the ability to accomplish quicker queries with only two indexes
+-- I first find average and max lengths to ensure my index will be adequately sizes with the texts I need
+SELECT MAX(LENGTH(company)) as max_length_comp,
+       AVG(LENGTH(company)) as avg_length_comp,
+       MAX(LENGTH(industry)) as max_length_ind,
+       AVG(LENGTH(industry)) as avg_length_ind
+FROM layoffs_staging2;
+
+CREATE INDEX idx_company_date ON layoffs_staging2(company(50), `date`);
+CREATE INDEX idx_industry ON layoffs_staging2(industry(50));
+
+-- This was exploratory to find out more about qhy my queries were slow
+## EXPLAIN UPDATE layoffs_staging2 AS l1
+## JOIN layoffs_staging2 AS l2
+## ON l1.company = l2.company
+## SET l1.industry = l2.industry
+## WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
+
 UPDATE layoffs_staging2 AS l1
 JOIN layoffs_staging2 AS l2
-ON l1.company = l2.company
+	ON l1.company = l2.company
 SET l1.industry = l2.industry
 WHERE (l1.industry IS NULL) AND (l2.industry IS NOT NULL);
 
@@ -337,7 +356,8 @@ SELECT DISTINCT(location)
 FROM layoffs_staging2
 ORDER BY 1;
 
-SELECT *
+SELECT company,
+location
 FROM layoffs_staging2
 WHERE location REGEXP "[^'A-Z a-z.-]";
 
@@ -357,6 +377,7 @@ SET location = CASE
     ELSE location
 END;
 
+-- I noticed some discrepancies in US locations so fixing here
 SELECT DISTINCT(country) 
 FROM layoffs_staging2
 WHERE country LIKE "United States%";
@@ -365,7 +386,7 @@ UPDATE layoffs_staging2
 SET country = TRIM(Trailing '.' FROM country)
 WHERE country LIKE "United States%";
 
--- Date Standardization, (FIRST INSPECTING NULLS - had one company with null so did research to find time frame of when layoffs occured for Blackbaud to impute)
+-- Date Standardization
 SELECT company,
 date, 
 total_laid_off
@@ -379,28 +400,54 @@ WHERE `DATE` IS NULL);
 ## SET `date` = str_to_date(`date`,"%m/%d/%Y");
 ## Describe layoffs_staging2;
 
+-- FIRST INSPECTING NULLS - I had only one company with null so did research to find time frame of when layoffs occured for Blackbaud to impute
+
 UPDATE layoffs_staging2
 SET date = cast('2023-02-14' AS DATE)
 WHERE company = "Blackbaud";
 
-SELECT * 
-FROM layoffs_staging2;
-
 -- Lets circle back to Nulls
-SELECT * 
+SELECT company,
+location,
+total_laid_off,
+percentage_laid_off,
+funds_raised_millions 
 FROM layoffs_staging2 
 WHERE total_laid_off IS NULL AND percentage_laid_off IS NULL
 ORDER BY 1;
 
--- THIS IS FOR ME TO PICK UP ON TOMORROW
 -- FOUND some redundant cases but impossible to know if the dublin branch is the same lay offs number as Toronto and other row is truly a duplicate after all
-SELECT * 
+SELECT l1.company,
+l1.location,
+l1.`date`,
+l1.total_laid_off,
+l1.percentage_laid_off,
+l2.company,
+l2.location,
+l2.`date`,
+l2.total_laid_off,
+l2.percentage_laid_off
 FROM layoffs_staging2 AS l1
 JOIN layoffs_staging2 AS l2
 	ON l1.Company = l2.company AND l1.date = l2.date
+WHERE (l1.total_laid_off IS NULL AND l2.total_laid_off IS NOT NULL)
+OR (l1.percentage_laid_off IS NULL AND l2.percentage_laid_off IS NOT NULL);
+
+-- NOTE THAT before indexes these took 7+ seconds, now .032 seconds!!!
+
+UPDATE layoffs_staging2 AS l1
+JOIN layoffs_staging2 AS l2
+	ON l1.Company = l2.company AND l1.date = l2.date
+SET l1.total_laid_off = l2.total_laid_off
 WHERE l1.total_laid_off IS NULL AND l2.total_laid_off IS NOT NULL;
 
--- Im comfortable getting rid of this data for purposes of EDA as we are focused on layoffs  
+UPDATE layoffs_staging2 AS l1
+JOIN layoffs_staging2 AS l2
+	ON l1.Company = l2.company AND l1.date = l2.date
+SET l1.percentage_laid_off = l2.percentage_laid_off
+WHERE l1.percentage_laid_off IS NULL AND l2.percentage_laid_off IS NOT NULL;
+
+-- Im comfortable getting rid of other dual NULL data for purposes of EDA as we are focused on layoffs  
 DELETE FROM layoffs_staging2 
 WHERE total_laid_off IS NULL AND percentage_laid_off IS NULL;
 
@@ -408,16 +455,12 @@ ALTER TABLE layoffs_staging2
 DROP Column row_num;
 
 -- No staging companies to fill
-SELECT DISTINCT(stage) 
+SELECT company,
+`date`,
+stage 
 from layoffs_staging2 
+WHERE stage IS NULL
 order by 1;
-
-SELECT * 
-FROM layoffs_staging2
-WHERE company IN (
-SELECT Company 
-from layoffs_staging2 
-WHERE stage IS NULL);
 
 UPDATE layoffs_staging2 l1
 JOIN layoffs_staging2 l2
@@ -431,6 +474,10 @@ WHERE company IN (SELECT DISTINCT(COMPANY)
 FROM layoffs_staging2
 WHERE stage = "unknown")
 ORDER BY company,stage;
+
+UPDATE layoffs_staging2
+SET stage = "unknown"
+WHERE stage IS NULL; 
 
 -- DELETING FINAL DUPLICATES TO ENSURE UNIQUENESS
 SELECT *
@@ -449,16 +496,18 @@ SELECT *
 FROM duplicate_cte
 WHERE row_num > 2;
 
-UPDATE layoffs_staging2 l1
-JOIN layoffs_staging2 l2
-ON l1.company = l2.company AND l1.`date` = l2.`date` 
-SET l1.percentage_laid_off = l2.percentage_laid_off
-WHERE l1.percentage_laid_off IS NULL and l2.percentage_laid_off IS NOT NULL;
+-- finish up with FUNDS RAISED MILLIONS!!! 1/20/26
 
 UPDATE layoffs_staging2 l1
 JOIN layoffs_staging2 l2
 ON l1.company = l2.company AND l1.`date` = l2.`date` 
 SET l1.funds_raised_millions = l2.funds_raised_millions
+WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
+
+SELECT *
+FROM layoffs_staging2 l1
+JOIN layoffs_staging2 l2
+ON l1.company = l2.company AND l1.`date` = l2.`date` 
 WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
 
 -- Lets look at final table
