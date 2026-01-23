@@ -386,6 +386,14 @@ UPDATE layoffs_staging2
 SET country = TRIM(Trailing '.' FROM country)
 WHERE country LIKE "United States%";
 
+UPDATE layoffs_staging2
+SET country = "Israel"
+WHERE company = "Anodot";
+
+UPDATE layoffs_staging2
+SET COUNTRY = "Norway"
+WHERE company = "Oda";
+
 -- Date Standardization
 SELECT company,
 date, 
@@ -483,33 +491,55 @@ WHERE stage IS NULL;
 SELECT *
 FROM layoffs_staging2
 WHERE COMPANY IN (WITH duplicate_cte AS (SELECT *,
-ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country ORDER BY total_laid_off,percentage_laid_off,funds_raised_millions) AS row_num
+ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country,total_laid_off ORDER BY percentage_laid_off,funds_raised_millions DESC) AS row_num
 FROM layoffs_staging2)
 SELECT DISTINCT(company)  
 FROM duplicate_cte
-WHERE row_num > 2);
+WHERE row_num > 1);
 
-WITH duplicate_cte AS (SELECT *,
-ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country ORDER BY total_laid_off,percentage_laid_off,funds_raised_millions) AS row_num
-FROM layoffs_staging2)
-SELECT *  
-FROM duplicate_cte
-WHERE row_num > 2;
+CREATE TABLE layoffs_final_table
+LIKE layoffs_staging2;
 
--- finish up with FUNDS RAISED MILLIONS!!! 1/20/26
+ALTER TABLE layoffs_final_table
+ADD COLUMN `row_num` INT;
 
-UPDATE layoffs_staging2 l1
-JOIN layoffs_staging2 l2
+INSERT INTO layoffs_final_table
+SELECT *,
+ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country,total_laid_off ORDER BY percentage_laid_off DESC,funds_raised_millions DESC) AS row_num
+FROM layoffs_staging2;
+
+DELETE FROM layoffs_final_table
+WHERE row_num > 1;
+
+## WITH duplicate_cte AS (SELECT *,
+## ROW_NUMBER() OVER(Partition BY company, location, industry, `date`,country,total_laid_off ORDER BY percentage_laid_off,funds_raised_millions DESC) AS row_num
+## FROM layoffs_staging2)
+## SELECT DISTINCT(company)  
+## FROM duplicate_cte
+## WHERE row_num > 1;
+
+UPDATE layoffs_final_table l1
+JOIN layoffs_final_table l2
 ON l1.company = l2.company AND l1.`date` = l2.`date` 
 SET l1.funds_raised_millions = l2.funds_raised_millions
 WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
 
-SELECT *
-FROM layoffs_staging2 l1
-JOIN layoffs_staging2 l2
-ON l1.company = l2.company AND l1.`date` = l2.`date` 
-WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
+## SELECT *
+## FROM layoffs_final_table l1
+## JOIN layoffs_final_table l2
+## ON l1.company = l2.company AND l1.`date` = l2.`date` 
+## WHERE l1.funds_raised_millions IS NULL and l2.funds_raised_millions IS NOT NULL;
 
--- Lets look at final table
-SELECT * 
-FROM layoffs_staging2;
+-- Lets look at final table specs, there are still some NULL numeric values but all strings are cleaned and dates run through End of 2025!! I am okay wiht null values for EDA since I without doing months of research cannot verify some values and would rather keep there company info for record 
+ALTER TABLE layoffs_final_table
+DROP COLUMN row_num;
+
+SELECT COUNT(*) AS records,
+COUNT(company) AS companies,
+COUNT(stage) AS non_null_stages,
+COUNT(location) AS locations,
+MIN(`date`) AS min_date, 
+Max(`date`) AS max_date,
+COUNT(total_laid_off) AS non_null_layoffs,
+COUNT(funds_raised_millions) AS non_null_funds
+FROM layoffs_final_table;

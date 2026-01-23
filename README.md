@@ -1,7 +1,7 @@
 This directory contains SQL code and data used for anaylzing global layoff impact
 
 # MySQL Layoff Project
-SQL Project to perform some data cleaning / imputation and Exloratory Data Analysis (EDA) on layoff data from past few years. 
+SQL Project to perform some data cleaning / imputation and Exloratory Data Analysis (EDA) on layoff data from past 5 years. 
 
 - Contents
     - 
@@ -11,8 +11,8 @@ SQL Project to perform some data cleaning / imputation and Exloratory Data Analy
 
 
 
-- Notes for furture updates 
+- Notes for updates 
     - 
     - Added more data from another source for additional context (1/14/2026) 
-    - Now looking to clean up the files and expand on some of the simpler querying before bringing to Tableau/PowerBI for Visualization
-    - NOTE FOR UPDATE IS TO FINALIZE CLEANING IN NEXT FEW DAYS - I AM ON LINE 395 OF CLEANING FILE
+    - Adjusted Pipeline to import and clean additional data using more advanced querying like stroed procedures. This made the pipeline feel more scalable moving forwards
+    - Now looking to bring to Tableau/PowerBI for Visualization
